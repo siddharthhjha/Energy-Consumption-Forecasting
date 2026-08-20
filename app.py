@@ -2,14 +2,15 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
-import plotly.express as px
-import plotly.graph_objects as go
 import os
 import sys
+from pathlib import Path
+
+# Get the directory where this script is located
+BASE_DIR = Path(__file__).parent.absolute()
 
 # Add src to path
-sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
+sys.path.append(str(BASE_DIR / 'src'))
 
 st.set_page_config(
     page_title="Energy Forecast Dashboard",
@@ -21,36 +22,93 @@ st.title("⚡ Energy Consumption Forecasting Dashboard")
 st.markdown("### PJM East Region - 24-Hour Electricity Demand Forecasting")
 
 # ============================================
+# HELPER FUNCTION TO FIND FILES
+# ============================================
+def find_file(filename, search_paths):
+    """Search for a file in multiple paths."""
+    for path in search_paths:
+        full_path = Path(path) / filename
+        if full_path.exists():
+            return full_path
+    return None
+
+# ============================================
 # LOAD DATA
 # ============================================
 @st.cache_data
 def load_data():
-    """Load processed data and model outputs."""
-    try:
-        df = pd.read_csv('PJME_hourly.csv')
-        df['Datetime'] = pd.to_datetime(df['Datetime'])
-        return df
-    except FileNotFoundError:
-        st.error("PJME_hourly.csv not found. Please check the file path.")
-        return None
+    """Load raw PJM data."""
+    # Try multiple possible locations
+    possible_paths = [
+        BASE_DIR / 'PJME_hourly.csv',
+        BASE_DIR / 'data' / 'PJME_hourly.csv',
+        BASE_DIR / '..' / 'PJME_hourly.csv'
+    ]
+    
+    for path in possible_paths:
+        if path.exists():
+            df = pd.read_csv(path)
+            df['Datetime'] = pd.to_datetime(df['Datetime'])
+            return df
+    
+    st.warning("PJME_hourly.csv not found. Please check the file path.")
+    return None
 
 @st.cache_data
 def load_outputs():
-    """Load model outputs from outputs folder."""
-    outputs = {}
-    try:
-        outputs['metrics'] = pd.read_csv('outputs/model_metrics.csv')
-        outputs['importance'] = pd.read_csv('outputs/feature_importance.csv')
-        outputs['predictions'] = pd.read_csv('outputs/predictions.csv')
-        outputs['comparison'] = pd.read_csv('outputs/model_comparison.csv')
-        return outputs
-    except FileNotFoundError as e:
-        st.warning(f"Some output files not found: {e}")
-        return None
+    """Load all model outputs with fallback to generated data."""
+    outputs = {
+        'metrics': None,
+        'importance': None,
+        'predictions': None,
+        'comparison': None
+    }
+    
+    # Try multiple locations for outputs
+    output_dirs = [
+        BASE_DIR / 'outputs',
+        BASE_DIR / '..' / 'outputs',
+        BASE_DIR / 'data' / 'outputs'
+    ]
+    
+    for out_dir in output_dirs:
+        if out_dir.exists():
+            # Check each file
+            for file_name, key in [
+                ('model_metrics.csv', 'metrics'),
+                ('feature_importance.csv', 'importance'),
+                ('predictions.csv', 'predictions'),
+                ('model_comparison.csv', 'comparison')
+            ]:
+                file_path = out_dir / file_name
+                if file_path.exists() and outputs[key] is None:
+                    outputs[key] = pd.read_csv(file_path)
+            
+            # If we found metrics, break
+            if outputs['metrics'] is not None:
+                break
+    
+    return outputs
 
-# Load everything
+@st.cache_data
+def load_weather():
+    """Load weather data from multiple possible locations."""
+    possible_paths = [
+        BASE_DIR / 'data' / 'processed' / 'weather_data.csv',
+        BASE_DIR / 'weather_data.csv',
+        BASE_DIR / '..' / 'data' / 'processed' / 'weather_data.csv'
+    ]
+    
+    for path in possible_paths:
+        if path.exists():
+            return pd.read_csv(path)
+    
+    return None
+
+# Load everything with proper error handling
 df = load_data()
 outputs = load_outputs()
+weather_df = load_weather()
 
 # ============================================
 # SIDEBAR NAVIGATION
@@ -67,16 +125,31 @@ page = st.sidebar.selectbox(
 if page == "Overview":
     st.header("📊 Project Overview")
     
-    if outputs and df is not None:
+    if outputs and outputs['metrics'] is not None:
         col1, col2, col3, col4 = st.columns(4)
-        
-        # Get metrics
         metrics_dict = {row['Metric']: row['Value'] for _, row in outputs['metrics'].iterrows()}
         
         col1.metric("MAPE", f"{metrics_dict.get('MAPE', 0):.2f}%")
         col2.metric("R² Score", f"{metrics_dict.get('R2', 0):.4f}")
         col3.metric("RMSE", f"{metrics_dict.get('RMSE', 0):.2f} MW")
-        col4.metric("Records", f"{len(df):,}")
+        col4.metric("Records", f"{len(df):,}" if df is not None else "N/A")
+    else:
+        st.info("Run the model pipeline to generate metrics. Click the button below to train the model.")
+        if st.button("🚀 Run Model Pipeline"):
+            with st.spinner("Training model... This may take a few minutes."):
+                try:
+                    # Import and run the pipeline
+                    from src.model_xgboost import train_xgboost
+                    from src.evaluation import evaluate_model
+                    
+                    if df is not None:
+                        model, metrics, predictions = train_xgboost(df)
+                        st.success("Model trained successfully! Refresh the page to see results.")
+                    else:
+                        st.error("Data not available. Please upload PJME_hourly.csv")
+                except Exception as e:
+                    st.error(f"Error: {e}")
+                    st.info("Make sure you have all dependencies installed and run the pipeline locally first.")
     
     st.markdown("""
     ### About This Project
@@ -85,20 +158,12 @@ if page == "Overview":
     - Grid balancing
     - Operational planning
     - Cost control
-    
-    **Features used:**
-    - Historical load (PJME_MW)
-    - Calendar features (hour, day, month)
-    - Lag features (1h, 2h, 3h, 6h, 12h, 24h, 48h)
-    - Rolling statistics (24h mean/std)
-    - Weather variables (temperature, humidity, wind speed)
-    
-    **Model:** XGBoost Regressor
     """)
     
     # Show predictions plot if available
-    if os.path.exists('outputs/predictions_plot.png'):
-        st.image('outputs/predictions_plot.png', caption='Actual vs Predicted', use_container_width=True)
+    pred_plot = find_file('predictions_plot.png', [BASE_DIR / 'outputs'])
+    if pred_plot and pred_plot.exists():
+        st.image(str(pred_plot), caption='Actual vs Predicted', use_container_width=True)
 
 # ============================================
 # PAGE 2: DATA & EDA
@@ -107,7 +172,6 @@ elif page == "Data & EDA":
     st.header("📈 Data & Exploratory Analysis")
     
     if df is not None:
-        # Show data summary
         st.subheader("Data Summary")
         col1, col2 = st.columns(2)
         with col1:
@@ -123,12 +187,11 @@ elif page == "Data & EDA":
         
         # Plot time series
         st.subheader("Energy Consumption Over Time")
-        fig = px.line(df, x='Datetime', y='PJME_MW', title='Hourly Energy Consumption')
+        sample_df = df.sample(min(5000, len(df)))
+        fig = px.line(sample_df, x='Datetime', y='PJME_MW', title='Hourly Energy Consumption')
         st.plotly_chart(fig, use_container_width=True)
-        
-        # Show EDA plot
-        if os.path.exists('outputs/eda_overview.png'):
-            st.image('outputs/eda_overview.png', caption='EDA Overview', use_container_width=True)
+    else:
+        st.warning("Data not loaded. Please check if PJME_hourly.csv is in the repository.")
 
 # ============================================
 # PAGE 3: WEATHER
@@ -149,99 +212,16 @@ elif page == "Weather":
     - Cloud Cover (%)
     """)
     
-    try:
-        weather_df = pd.read_csv('data/processed/weather_data.csv')
+    if weather_df is not None:
         st.subheader("Weather Data Sample")
         st.dataframe(weather_df.head(50))
         
-        # Temperature plot
-        fig = px.line(weather_df, x='Datetime', y='Temperature', title='Temperature Over Time')
-        st.plotly_chart(fig, use_container_width=True)
-        
-    except FileNotFoundError:
+        if 'Temperature' in weather_df.columns and 'Datetime' in weather_df.columns:
+            fig = px.line(weather_df, x='Datetime', y='Temperature', title='Temperature Over Time')
+            st.plotly_chart(fig, use_container_width=True)
+    else:
         st.warning("Weather data not found. Run the data pipeline first.")
-
-# ============================================
-# PAGE 4: FEATURES
-# ============================================
-elif page == "Features":
-    st.header("🧩 Feature Engineering")
-    
-    if outputs is not None:
-        # Show feature importance
-        st.subheader("Top 10 Most Important Features")
-        fig = px.bar(outputs['importance'].head(10), 
-                     x='importance', y='feature', 
-                     orientation='h',
-                     title='Feature Importance',
-                     color='importance',
-                     color_continuous_scale='Blues')
-        st.plotly_chart(fig, use_container_width=True)
-        
-        st.markdown("""
-        **Features engineered:**
-        - **Time Features:** hour, day_of_week, month, quarter
-        - **Cyclical Encoding:** hour_sin, hour_cos, day_sin, day_cos
-        - **Lag Features:** lag_1h, lag_2h, lag_3h, lag_6h, lag_12h, lag_24h, lag_48h
-        - **Rolling Statistics:** rolling_mean_24h, rolling_std_24h
-        - **Weather Features:** Temperature, Humidity, WindSpeed
-        """)
-    
-    if os.path.exists('outputs/feature_importance.png'):
-        st.image('outputs/feature_importance.png', caption='Feature Importance', use_container_width=True)
-
-# ============================================
-# PAGE 5: MODEL & EVALUATION
-# ============================================
-else:
-    st.header("🤖 Model & Evaluation")
-    
-    if outputs is not None:
-        st.subheader("Model Performance Metrics")
-        st.dataframe(outputs['metrics'])
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            st.subheader("Model Comparison")
-            st.dataframe(outputs['comparison'])
-        
-        with col2:
-            st.subheader("Predictions Sample")
-            st.dataframe(outputs['predictions'].head(20))
-        
-        # Show residuals plot
-        if os.path.exists('outputs/residuals_plot.png'):
-            st.image('outputs/residuals_plot.png', caption='Residuals Analysis', use_container_width=True)
-    
-    st.markdown("""
-    ### Model Details
-    
-    **Algorithm:** XGBoost Regressor
-    
-    **Hyperparameters:**
-    - n_estimators: 1000
-    - learning_rate: 0.01
-    - max_depth: 6
-    - subsample: 0.8
-    - colsample_bytree: 0.8
-    
-    **Architecture:**
-    At forecast origin t, the model predicts demand at t+24 hours.
-    Training/test records are split by target timestamp, so evaluation
-    does not use future observed load as an input.
-    """)
-
-# ============================================
-# FOOTER
-# ============================================
-st.sidebar.markdown("---")
-st.sidebar.info("""
-**Project Info**
-- Model: XGBoost
-- Region: PJM East
-- Horizon: 24 hours
-- MAPE: <5%
-""")
-
-st.markdown("---")
-st.markdown("Built with Streamlit • Data: PJM Hourly Energy Consumption • Weather: OpenWeatherMap API")
+        st.info("""
+        To generate weather data, run:
+        ```bash
+        python -m src.data_pipeline
