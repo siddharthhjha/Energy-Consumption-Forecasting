@@ -296,6 +296,43 @@ def print_metrics(metrics):
     print("="*60 + "\n")
 
 
+def get_feature_names_from_model(model, default_count=10):
+    """
+    Get feature names from the model if available.
+    
+    Parameters:
+    -----------
+    model : XGBoost model
+        Trained XGBoost model
+    default_count : int
+        Number of features if names can't be extracted
+        
+    Returns:
+    --------
+    list
+        List of feature names
+    """
+    try:
+        # Try to get feature names from booster
+        if hasattr(model, 'get_booster'):
+            booster = model.get_booster()
+            if hasattr(booster, 'feature_names'):
+                feature_names = booster.feature_names
+                if feature_names and len(feature_names) > 0:
+                    return feature_names
+        
+        # Try to get from model's feature_names attribute
+        if hasattr(model, 'feature_names_in_'):
+            return list(model.feature_names_in_)
+        
+        # If all else fails, create generic names
+        return [f'Feature_{i}' for i in range(default_count)]
+    
+    except Exception as e:
+        print(f"Warning: Could not extract feature names: {e}")
+        return [f'Feature_{i}' for i in range(default_count)]
+
+
 def evaluate_model(model, metrics, predictions, feature_cols=None):
     """
     Complete evaluation pipeline - generates all metrics and visualizations.
@@ -370,32 +407,17 @@ def evaluate_model(model, metrics, predictions, feature_cols=None):
     )
     results['scatter_plot'] = output_dir / 'scatter_plot.png'
     
-    # Plot 4: Feature Importance - FIXED
+    # Plot 4: Feature Importance
     print("Generating feature importance plot...")
     
     # Get feature importance from model
     if hasattr(model, 'feature_importances_'):
         importances = model.feature_importances_
         
-        # Get feature columns
+        # Get feature columns - FIXED
         if feature_cols is None:
-            # Try to get from predictions or use generic names
-            if 'feature_cols' in locals():
-                pass
-            else:
-                # Get feature columns from the model's feature names if available
-                try:
-                    if hasattr(model, 'get_booster'):
-                        feature_names = model.get_booster().feature_names
-                        if feature_names and len(feature_names) == len(importances):
-                            feature_cols = feature_names
-                        else:
-                            # Create generic feature names
-                            feature_cols = [f'Feature_{i}' for i in range(len(importances))]
-                    else:
-                        feature_cols = [f'Feature_{i}' for i in range(len(importances))]
-                except:
-                    feature_cols = [f'Feature_{i}' for i in range(len(importances))]
+            # Try to get from model
+            feature_cols = get_feature_names_from_model(model, len(importances))
         
         # Ensure lengths match
         if len(feature_cols) != len(importances):
