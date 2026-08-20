@@ -1,10 +1,11 @@
-# app.py - Streamlit Dashboard for Energy Forecasting
 import streamlit as st
 import pandas as pd
 import numpy as np
 import os
 import sys
 from pathlib import Path
+import plotly.express as px
+import plotly.graph_objects as go
 
 # Get the directory where this script is located
 BASE_DIR = Path(__file__).parent.absolute()
@@ -38,7 +39,6 @@ def find_file(filename, search_paths):
 @st.cache_data
 def load_data():
     """Load raw PJM data."""
-    # Try multiple possible locations
     possible_paths = [
         BASE_DIR / 'PJME_hourly.csv',
         BASE_DIR / 'data' / 'PJME_hourly.csv',
@@ -56,7 +56,7 @@ def load_data():
 
 @st.cache_data
 def load_outputs():
-    """Load all model outputs with fallback to generated data."""
+    """Load all model outputs."""
     outputs = {
         'metrics': None,
         'importance': None,
@@ -64,7 +64,6 @@ def load_outputs():
         'comparison': None
     }
     
-    # Try multiple locations for outputs
     output_dirs = [
         BASE_DIR / 'outputs',
         BASE_DIR / '..' / 'outputs',
@@ -73,7 +72,6 @@ def load_outputs():
     
     for out_dir in output_dirs:
         if out_dir.exists():
-            # Check each file
             for file_name, key in [
                 ('model_metrics.csv', 'metrics'),
                 ('feature_importance.csv', 'importance'),
@@ -84,7 +82,6 @@ def load_outputs():
                 if file_path.exists() and outputs[key] is None:
                     outputs[key] = pd.read_csv(file_path)
             
-            # If we found metrics, break
             if outputs['metrics'] is not None:
                 break
     
@@ -92,7 +89,7 @@ def load_outputs():
 
 @st.cache_data
 def load_weather():
-    """Load weather data from multiple possible locations."""
+    """Load weather data."""
     possible_paths = [
         BASE_DIR / 'data' / 'processed' / 'weather_data.csv',
         BASE_DIR / 'weather_data.csv',
@@ -105,7 +102,7 @@ def load_weather():
     
     return None
 
-# Load everything with proper error handling
+# Load everything
 df = load_data()
 outputs = load_outputs()
 weather_df = load_weather()
@@ -130,18 +127,15 @@ if page == "Overview":
         metrics_dict = {row['Metric']: row['Value'] for _, row in outputs['metrics'].iterrows()}
         
         col1.metric("MAPE", f"{metrics_dict.get('MAPE', 0):.2f}%")
-        col2.metric("R² Score", f"{metrics_dict.get('R2', 0):.4f}")
+        col2.metric("R2 Score", f"{metrics_dict.get('R2', 0):.4f}")
         col3.metric("RMSE", f"{metrics_dict.get('RMSE', 0):.2f} MW")
         col4.metric("Records", f"{len(df):,}" if df is not None else "N/A")
     else:
-        st.info("Run the model pipeline to generate metrics. Click the button below to train the model.")
+        st.info("Run the model pipeline to generate metrics.")
         if st.button("Run Model Pipeline"):
             with st.spinner("Training model... This may take a few minutes."):
                 try:
-                    # Import and run the pipeline
                     from src.model_xgboost import train_xgboost
-                    from src.evaluation import evaluate_model
-                    
                     if df is not None:
                         model, metrics, predictions = train_xgboost(df)
                         st.success("Model trained successfully! Refresh the page to see results.")
@@ -149,7 +143,6 @@ if page == "Overview":
                         st.error("Data not available. Please upload PJME_hourly.csv")
                 except Exception as e:
                     st.error(f"Error: {e}")
-                    st.info("Make sure you have all dependencies installed and run the pipeline locally first.")
     
     st.markdown("""
     ### About This Project
@@ -160,7 +153,6 @@ if page == "Overview":
     - Cost control
     """)
     
-    # Show predictions plot if available
     pred_plot = find_file('predictions_plot.png', [BASE_DIR / 'outputs'])
     if pred_plot and pred_plot.exists():
         st.image(str(pred_plot), caption='Actual vs Predicted', use_container_width=True)
@@ -181,11 +173,9 @@ elif page == "Data & EDA":
             st.write("**Columns:**")
             st.write(df.columns.tolist())
         
-        # Show raw data
         with st.expander("View Raw Data"):
             st.dataframe(df.head(100))
         
-        # Plot time series
         st.subheader("Energy Consumption Over Time")
         sample_df = df.sample(min(5000, len(df)))
         fig = px.line(sample_df, x='Datetime', y='PJME_MW', title='Hourly Energy Consumption')
@@ -205,7 +195,7 @@ elif page == "Weather":
     - Longitude: 75.17°W (PJM East region)
     
     **Weather features:**
-    - Temperature (°C)
+    - Temperature (C)
     - Humidity (%)
     - Wind Speed (m/s)
     - Pressure (hPa)
@@ -221,7 +211,93 @@ elif page == "Weather":
             st.plotly_chart(fig, use_container_width=True)
     else:
         st.warning("Weather data not found. Run the data pipeline first.")
-        st.info("""
-        To generate weather data, run:
-        ```bash
-        python -m src.data_pipeline
+
+# ============================================
+# PAGE 4: FEATURES
+# ============================================
+elif page == "Features":
+    st.header("Feature Engineering")
+    
+    if outputs and outputs['importance'] is not None:
+        st.subheader("Top 10 Most Important Features")
+        fig = px.bar(outputs['importance'].head(10), 
+                     x='importance', y='feature', 
+                     orientation='h',
+                     title='Feature Importance',
+                     color='importance',
+                     color_continuous_scale='Blues')
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("Feature importance data not available. Run the model pipeline to generate it.")
+    
+    st.markdown("""
+    **Features engineered:**
+    - **Time Features:** hour, day_of_week, month, quarter
+    - **Cyclical Encoding:** hour_sin, hour_cos, day_sin, day_cos
+    - **Lag Features:** lag_1h, lag_2h, lag_3h, lag_6h, lag_12h, lag_24h, lag_48h
+    - **Rolling Statistics:** rolling_mean_24h, rolling_std_24h
+    - **Weather Features:** Temperature, Humidity, WindSpeed
+    """)
+    
+    imp_plot = find_file('feature_importance.png', [BASE_DIR / 'outputs'])
+    if imp_plot and imp_plot.exists():
+        st.image(str(imp_plot), caption='Feature Importance', use_container_width=True)
+
+# ============================================
+# PAGE 5: MODEL & EVALUATION
+# ============================================
+else:
+    st.header("Model & Evaluation")
+    
+    if outputs and outputs['metrics'] is not None:
+        st.subheader("Model Performance Metrics")
+        st.dataframe(outputs['metrics'])
+        
+        if outputs['comparison'] is not None:
+            col1, col2 = st.columns(2)
+            with col1:
+                st.subheader("Model Comparison")
+                st.dataframe(outputs['comparison'])
+        
+        if outputs['predictions'] is not None:
+            st.subheader("Predictions Sample")
+            st.dataframe(outputs['predictions'].head(20))
+        
+        res_plot = find_file('residuals_plot.png', [BASE_DIR / 'outputs'])
+        if res_plot and res_plot.exists():
+            st.image(str(res_plot), caption='Residuals Analysis', use_container_width=True)
+    else:
+        st.info("No model outputs found. Generate them by running the pipeline locally and committing the outputs/ folder.")
+    
+    st.markdown("""
+    ### Model Details
+    
+    **Algorithm:** XGBoost Regressor
+    
+    **Hyperparameters:**
+    - n_estimators: 1000
+    - learning_rate: 0.01
+    - max_depth: 6
+    - subsample: 0.8
+    - colsample_bytree: 0.8
+    
+    **Architecture:**
+    At forecast origin t, the model predicts demand at t+24 hours.
+    Training/test records are split by target timestamp, so evaluation
+    does not use future observed load as an input.
+    """)
+
+# ============================================
+# FOOTER
+# ============================================
+st.sidebar.markdown("---")
+st.sidebar.info("""
+**Project Info**
+- Model: XGBoost
+- Region: PJM East
+- Horizon: 24 hours
+- MAPE: <5%
+""")
+
+st.markdown("---")
+st.markdown("Built with Streamlit • Data: PJM Hourly Energy Consumption • Weather: OpenWeatherMap API")
