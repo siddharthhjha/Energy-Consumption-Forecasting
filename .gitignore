@@ -1,0 +1,8 @@
+.env
+__pycache__/
+*.pyc
+data/weather_data.csv
+data/processed/*.csv
+models/*.json
+outputs/*.csv
+outputs/*.png
