@@ -3,9 +3,8 @@ import pandas as pd
 import numpy as np
 import os
 import sys
+import traceback
 from pathlib import Path
-import plotly.express as px
-import plotly.graph_objects as go
 
 # Get the directory where this script is located
 BASE_DIR = Path(__file__).parent.absolute()
@@ -21,6 +20,16 @@ st.set_page_config(
 
 st.title("⚡ Energy Consumption Forecasting Dashboard")
 st.markdown("### PJM East Region - 24-Hour Electricity Demand Forecasting")
+
+# ============================================
+# SESSION STATE FOR TRAINING STATUS
+# ============================================
+if 'training' not in st.session_state:
+    st.session_state.training = False
+if 'training_done' not in st.session_state:
+    st.session_state.training_done = False
+if 'error_message' not in st.session_state:
+    st.session_state.error_message = None
 
 # ============================================
 # HELPER FUNCTION TO FIND FILES
@@ -51,7 +60,6 @@ def load_data():
             df['Datetime'] = pd.to_datetime(df['Datetime'])
             return df
     
-    st.warning("PJME_hourly.csv not found. Please check the file path.")
     return None
 
 @st.cache_data
@@ -87,25 +95,40 @@ def load_outputs():
     
     return outputs
 
-@st.cache_data
-def load_weather():
-    """Load weather data."""
-    possible_paths = [
-        BASE_DIR / 'data' / 'processed' / 'weather_data.csv',
-        BASE_DIR / 'weather_data.csv',
-        BASE_DIR / '..' / 'data' / 'processed' / 'weather_data.csv'
-    ]
-    
-    for path in possible_paths:
-        if path.exists():
-            return pd.read_csv(path)
-    
-    return None
-
-# Load everything
-df = load_data()
-outputs = load_outputs()
-weather_df = load_weather()
+def train_model_pipeline(df):
+    """Run the model training pipeline with detailed error reporting."""
+    try:
+        st.text("Step 1: Importing required modules...")
+        from src.feature_engineering import engineer_features
+        st.text("✓ Feature engineering module imported")
+        
+        from src.model_xgboost import train_xgboost
+        st.text("✓ XGBoost module imported")
+        
+        from src.evaluation import evaluate_model
+        st.text("✓ Evaluation module imported")
+        
+        st.text("Step 2: Engineering features...")
+        df_engineered = engineer_features(df)
+        st.text(f"✓ Features engineered: {len(df_engineered.columns)} columns")
+        
+        st.text("Step 3: Training XGBoost model...")
+        model, metrics, predictions = train_xgboost(df_engineered)
+        st.text("✓ Model training complete!")
+        
+        st.text("Step 4: Evaluating model...")
+        evaluate_model(model, metrics, predictions)
+        st.text("✓ Evaluation complete!")
+        
+        st.session_state.training_done = True
+        st.session_state.training = False
+        st.success("✅ Model training completed successfully!")
+        
+    except Exception as e:
+        st.session_state.training = False
+        st.session_state.error_message = str(e)
+        st.error(f"❌ Error during training: {str(e)}")
+        st.code(traceback.format_exc())
 
 # ============================================
 # SIDEBAR NAVIGATION
@@ -122,27 +145,50 @@ page = st.sidebar.selectbox(
 if page == "Overview":
     st.header("Project Overview")
     
+    # Load data
+    df = load_data()
+    outputs = load_outputs()
+    
+    if df is None:
+        st.error("❌ PJME_hourly.csv not found. Please check the file path.")
+        st.info(f"Looking for file in: {BASE_DIR}")
+        if BASE_DIR.exists():
+            st.write("Files in directory:", list(BASE_DIR.glob("*.csv")))
+    
     if outputs and outputs['metrics'] is not None:
         col1, col2, col3, col4 = st.columns(4)
         metrics_dict = {row['Metric']: row['Value'] for _, row in outputs['metrics'].iterrows()}
         
         col1.metric("MAPE", f"{metrics_dict.get('MAPE', 0):.2f}%")
-        col2.metric("R2 Score", f"{metrics_dict.get('R2', 0):.4f}")
+        col2.metric("R² Score", f"{metrics_dict.get('R2', 0):.4f}")
         col3.metric("RMSE", f"{metrics_dict.get('RMSE', 0):.2f} MW")
         col4.metric("Records", f"{len(df):,}" if df is not None else "N/A")
-    else:
+        
+        st.success("✅ Model metrics loaded successfully!")
+        
+        # Show predictions plot
+        pred_plot = find_file('predictions_plot.png', [BASE_DIR / 'outputs'])
+        if pred_plot and pred_plot.exists():
+            st.image(str(pred_plot), caption='Actual vs Predicted', use_container_width=True)
+    
+    elif df is not None:
         st.info("Run the model pipeline to generate metrics.")
+        
         if st.button("Run Model Pipeline"):
+            st.session_state.training = True
+            st.session_state.training_done = False
+            st.session_state.error_message = None
+            
             with st.spinner("Training model... This may take a few minutes."):
-                try:
-                    from src.model_xgboost import train_xgboost
-                    if df is not None:
-                        model, metrics, predictions = train_xgboost(df)
-                        st.success("Model trained successfully! Refresh the page to see results.")
-                    else:
-                        st.error("Data not available. Please upload PJME_hourly.csv")
-                except Exception as e:
-                    st.error(f"Error: {e}")
+                train_model_pipeline(df)
+        
+        # Show training status
+        if st.session_state.training:
+            st.warning("⏳ Training in progress... Please wait.")
+        
+        if st.session_state.error_message:
+            st.error(f"⚠️ Error: {st.session_state.error_message}")
+            st.info("Check the logs for more details.")
     
     st.markdown("""
     ### About This Project
@@ -153,15 +199,16 @@ if page == "Overview":
     - Cost control
     """)
     
-    pred_plot = find_file('predictions_plot.png', [BASE_DIR / 'outputs'])
-    if pred_plot and pred_plot.exists():
-        st.image(str(pred_plot), caption='Actual vs Predicted', use_container_width=True)
+    st.markdown("---")
+    st.caption("Built with Streamlit • Data: PJM Hourly Energy Consumption • Weather: OpenWeatherMap API")
 
 # ============================================
 # PAGE 2: DATA & EDA
 # ============================================
 elif page == "Data & EDA":
     st.header("Data & Exploratory Analysis")
+    
+    df = load_data()
     
     if df is not None:
         st.subheader("Data Summary")
@@ -177,6 +224,7 @@ elif page == "Data & EDA":
             st.dataframe(df.head(100))
         
         st.subheader("Energy Consumption Over Time")
+        import plotly.express as px
         sample_df = df.sample(min(5000, len(df)))
         fig = px.line(sample_df, x='Datetime', y='PJME_MW', title='Hourly Energy Consumption')
         st.plotly_chart(fig, use_container_width=True)
@@ -202,15 +250,19 @@ elif page == "Weather":
     - Cloud Cover (%)
     """)
     
-    if weather_df is not None:
+    weather_path = BASE_DIR / 'data' / 'processed' / 'weather_data.csv'
+    if weather_path.exists():
+        weather_df = pd.read_csv(weather_path)
         st.subheader("Weather Data Sample")
         st.dataframe(weather_df.head(50))
         
         if 'Temperature' in weather_df.columns and 'Datetime' in weather_df.columns:
+            import plotly.express as px
             fig = px.line(weather_df, x='Datetime', y='Temperature', title='Temperature Over Time')
             st.plotly_chart(fig, use_container_width=True)
     else:
         st.warning("Weather data not found. Run the data pipeline first.")
+        st.info(f"Looking for: {weather_path}")
 
 # ============================================
 # PAGE 4: FEATURES
@@ -218,7 +270,10 @@ elif page == "Weather":
 elif page == "Features":
     st.header("Feature Engineering")
     
+    outputs = load_outputs()
+    
     if outputs and outputs['importance'] is not None:
+        import plotly.express as px
         st.subheader("Top 10 Most Important Features")
         fig = px.bar(outputs['importance'].head(10), 
                      x='importance', y='feature', 
@@ -249,6 +304,8 @@ elif page == "Features":
 else:
     st.header("Model & Evaluation")
     
+    outputs = load_outputs()
+    
     if outputs and outputs['metrics'] is not None:
         st.subheader("Model Performance Metrics")
         st.dataframe(outputs['metrics'])
@@ -267,7 +324,7 @@ else:
         if res_plot and res_plot.exists():
             st.image(str(res_plot), caption='Residuals Analysis', use_container_width=True)
     else:
-        st.info("No model outputs found. Generate them by running the pipeline locally and committing the outputs/ folder.")
+        st.info("No model outputs found. Run the pipeline locally and commit the outputs/ folder.")
     
     st.markdown("""
     ### Model Details
@@ -298,6 +355,3 @@ st.sidebar.info("""
 - Horizon: 24 hours
 - MAPE: <5%
 """)
-
-st.markdown("---")
-st.markdown("Built with Streamlit • Data: PJM Hourly Energy Consumption • Weather: OpenWeatherMap API")
