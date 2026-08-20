@@ -296,7 +296,7 @@ def print_metrics(metrics):
     print("="*60 + "\n")
 
 
-def evaluate_model(model, metrics, predictions, y_true=None, y_pred=None, feature_importance=None):
+def evaluate_model(model, metrics, predictions, feature_cols=None):
     """
     Complete evaluation pipeline - generates all metrics and visualizations.
     
@@ -308,12 +308,8 @@ def evaluate_model(model, metrics, predictions, y_true=None, y_pred=None, featur
         Dictionary of metrics
     predictions : pandas.DataFrame
         DataFrame with predictions
-    y_true : array-like
-        Actual values (optional)
-    y_pred : array-like
-        Predicted values (optional)
-    feature_importance : pandas.DataFrame
-        Feature importance DataFrame (optional)
+    feature_cols : list
+        List of feature column names (optional)
         
     Returns:
     --------
@@ -339,14 +335,13 @@ def evaluate_model(model, metrics, predictions, y_true=None, y_pred=None, featur
     # Save metrics
     save_metrics_to_csv(metrics)
     
-    # Get actual and predicted values if not provided
-    if y_true is None and y_pred is None:
-        if 'Actual' in predictions.columns and 'Predicted' in predictions.columns:
-            y_true = predictions['Actual'].values
-            y_pred = predictions['Predicted'].values
-        else:
-            print("Warning: No actual/predicted values found in predictions DataFrame.")
-            return results
+    # Get actual and predicted values
+    if 'Actual' in predictions.columns and 'Predicted' in predictions.columns:
+        y_true = predictions['Actual'].values
+        y_pred = predictions['Predicted'].values
+    else:
+        print("Warning: No actual/predicted values found in predictions DataFrame.")
+        return results
     
     # Plot 1: Actual vs Predicted
     print("\nGenerating predictions plot...")
@@ -375,26 +370,50 @@ def evaluate_model(model, metrics, predictions, y_true=None, y_pred=None, featur
     )
     results['scatter_plot'] = output_dir / 'scatter_plot.png'
     
-    # Plot 4: Feature Importance
-    if feature_importance is not None:
-        print("Generating feature importance plot...")
-        plot_feature_importance(
-            feature_importance,
-            top_n=10,
-            title="Energy Consumption Forecasting - Feature Importance",
-            save_path=output_dir / 'feature_importance.png'
-        )
-        results['feature_importance_plot'] = output_dir / 'feature_importance.png'
-    elif hasattr(model, 'feature_importances_'):
-        # Get feature importance from model
-        print("Generating feature importance plot from model...")
-        from .feature_engineering import get_feature_columns
-        feature_cols = get_feature_columns(predictions, 'Actual')
+    # Plot 4: Feature Importance - FIXED
+    print("Generating feature importance plot...")
+    
+    # Get feature importance from model
+    if hasattr(model, 'feature_importances_'):
+        importances = model.feature_importances_
+        
+        # Get feature columns
+        if feature_cols is None:
+            # Try to get from predictions or use generic names
+            if 'feature_cols' in locals():
+                pass
+            else:
+                # Get feature columns from the model's feature names if available
+                try:
+                    if hasattr(model, 'get_booster'):
+                        feature_names = model.get_booster().feature_names
+                        if feature_names and len(feature_names) == len(importances):
+                            feature_cols = feature_names
+                        else:
+                            # Create generic feature names
+                            feature_cols = [f'Feature_{i}' for i in range(len(importances))]
+                    else:
+                        feature_cols = [f'Feature_{i}' for i in range(len(importances))]
+                except:
+                    feature_cols = [f'Feature_{i}' for i in range(len(importances))]
+        
+        # Ensure lengths match
+        if len(feature_cols) != len(importances):
+            print(f"Warning: Feature count ({len(feature_cols)}) doesn't match importance count ({len(importances)}). Using generic names.")
+            feature_cols = [f'Feature_{i}' for i in range(len(importances))]
+        
+        # Create importance DataFrame
         importance_df = pd.DataFrame({
             'feature': feature_cols,
-            'importance': model.feature_importances_
+            'importance': importances
         }).sort_values('importance', ascending=False)
         
+        # Save to CSV
+        importance_path = output_dir / 'feature_importance.csv'
+        importance_df.to_csv(importance_path, index=False)
+        print(f"Feature importance saved to: {importance_path}")
+        
+        # Plot
         plot_feature_importance(
             importance_df,
             top_n=10,
@@ -403,6 +422,8 @@ def evaluate_model(model, metrics, predictions, y_true=None, y_pred=None, featur
         )
         results['feature_importance_plot'] = output_dir / 'feature_importance.png'
         results['feature_importance_df'] = importance_df
+    else:
+        print("Warning: Model does not have feature_importances_ attribute.")
     
     # Save comparison metrics
     comparison_df = pd.DataFrame({
