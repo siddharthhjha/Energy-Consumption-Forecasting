@@ -123,7 +123,7 @@ page = st.sidebar.selectbox(
 # PAGE 1: OVERVIEW
 # ============================================
 if page == "Overview":
-    st.header("📊 Project Overview")
+    st.header("Project Overview")
     
     if outputs and outputs['metrics'] is not None:
         col1, col2, col3, col4 = st.columns(4)
@@ -135,7 +135,7 @@ if page == "Overview":
         col4.metric("Records", f"{len(df):,}" if df is not None else "N/A")
     else:
         st.info("Run the model pipeline to generate metrics. Click the button below to train the model.")
-        if st.button("🚀 Run Model Pipeline"):
+        if st.button("Run Model Pipeline"):
             with st.spinner("Training model... This may take a few minutes."):
                 try:
                     # Import and run the pipeline
@@ -169,7 +169,7 @@ if page == "Overview":
 # PAGE 2: DATA & EDA
 # ============================================
 elif page == "Data & EDA":
-    st.header("📈 Data & Exploratory Analysis")
+    st.header("Data & Exploratory Analysis")
     
     if df is not None:
         st.subheader("Data Summary")
@@ -197,7 +197,7 @@ elif page == "Data & EDA":
 # PAGE 3: WEATHER
 # ============================================
 elif page == "Weather":
-    st.header("🌤️ Weather Data Integration")
+    st.header("Weather Data Integration")
     
     st.markdown("""
     Weather data is pulled from **OpenWeatherMap API** using:
